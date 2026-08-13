@@ -33,7 +33,9 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/jeffvan302/rag-runpod:0.1.0
+          tags: |
+            ghcr.io/jeffvan302/rag-runpod:0.1.0
+            ghcr.io/jeffvan302/rag-runpod-worker:0.1.0
           labels: |
             org.opencontainers.image.source=https://github.com/jeffvan302/rag-runpod
             org.opencontainers.image.description=RunPod Serverless worker for BubbleAPI embedding acceleration
