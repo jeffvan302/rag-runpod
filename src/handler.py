@@ -20,6 +20,7 @@ from embedding_contract import (
     MODEL_OUTPUT_DIMENSIONS,
     format_embedding_text,
     normalize_output_dimensions,
+    require_model_revision,
 )
 
 
@@ -77,7 +78,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "operation": "health",
         "protocolVersion": PROTOCOL_VERSION,
-        "workerVersion": "0.2.0",
+        "workerVersion": "0.3.0",
         "device": device_summary(),
         "allowedModels": allowed_models(),
         "defaultModel": default_model(),
@@ -141,6 +142,7 @@ def embed_texts(job_input: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Direct embedding input exceeds the worker size limit.")
 
     state = get_model_state(model_id)
+    require_model_revision(job_input.get("revision"), state)
     batch_size = min(positive_int(job_input.get("batchSize"), DEFAULT_BATCH_SIZE), 64)
     vectors = encode_texts(state, texts, batch_size, dimensions)
 
@@ -148,7 +150,7 @@ def embed_texts(job_input: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "operation": "embed_texts",
         "protocolVersion": PROTOCOL_VERSION,
-        "workerVersion": "0.2.0",
+        "workerVersion": "0.3.0",
         "model": model_id,
         "modelRevision": state["snapshot_revision"],
         "dimensions": dimensions,
@@ -185,6 +187,7 @@ def chunk_and_embed(job: dict[str, Any], job_input: dict[str, Any]) -> dict[str,
     chunking_ms = elapsed_ms(chunk_started)
 
     model_state = get_model_state(model_id)
+    require_model_revision(embedding.get("revision"), model_state)
     batch_size = positive_int(embedding.get("batchSize"), DEFAULT_BATCH_SIZE)
     total_batches = max(1, math.ceil(len(chunks) / batch_size))
     batch_hashes: list[str] = []

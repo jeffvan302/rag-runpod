@@ -49,3 +49,11 @@ def format_embedding_text(value: Any, purpose: str) -> str:
         raise ValueError("embedding purpose must be query or document.")
     return clean if clean.startswith(QUERY_PREFIX) else f"{QUERY_PREFIX}{clean}"
 
+
+def require_model_revision(value: Any, model_state: dict[str, Any]) -> None:
+    requested = str(value or "").strip()
+    if requested and requested != model_state["snapshot_revision"]:
+        raise ValueError(
+            f"Model revision mismatch for {model_state['id']}: "
+            f"requested {requested}, loaded {model_state['snapshot_revision']}."
+        )
