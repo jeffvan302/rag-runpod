@@ -25,6 +25,7 @@ from embedding_contract import (
 
 
 PROTOCOL_VERSION = int(os.getenv("BUBBLE_RAG_PROTOCOL_VERSION", "1"))
+WORKER_VERSION = "0.3.1"
 DEFAULT_MODEL = "Qwen/Qwen3-Embedding-4B"
 MODEL_ALIASES = {
     "qwen3-embedding-4b": "Qwen/Qwen3-Embedding-4B",
@@ -78,7 +79,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "operation": "health",
         "protocolVersion": PROTOCOL_VERSION,
-        "workerVersion": "0.3.0",
+        "workerVersion": WORKER_VERSION,
         "device": device_summary(),
         "allowedModels": allowed_models(),
         "defaultModel": default_model(),
@@ -150,7 +151,7 @@ def embed_texts(job_input: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "operation": "embed_texts",
         "protocolVersion": PROTOCOL_VERSION,
-        "workerVersion": "0.3.0",
+        "workerVersion": WORKER_VERSION,
         "model": model_id,
         "modelRevision": state["snapshot_revision"],
         "dimensions": dimensions,

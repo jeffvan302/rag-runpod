@@ -247,7 +247,11 @@ def trim_end_offset(value: str, start_offset: int, end_offset: int) -> int:
 
 
 def estimate_token_count(value: str) -> int:
-    return max(1, math.ceil(len(value) / 4))
+    return max(1, math.ceil(utf16_length(value) / 4))
+
+
+def utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
 
 
 def token_chars(tokens: int) -> int:

@@ -1,6 +1,6 @@
 import unittest
 
-from src.chunking import split_markdown_for_chunks, utf16_offsets
+from src.chunking import estimate_token_count, split_markdown_for_chunks, utf16_offsets
 
 
 class ChunkingTests(unittest.TestCase):
@@ -23,6 +23,9 @@ class ChunkingTests(unittest.TestCase):
         offsets = utf16_offsets("a😀b")
 
         self.assertEqual(offsets, [0, 1, 3, 4])
+
+    def test_token_estimate_uses_javascript_utf16_length(self):
+        self.assertEqual(estimate_token_count("abc😀"), 2)
 
 
 if __name__ == "__main__":
