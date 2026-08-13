@@ -15,6 +15,12 @@ import requests
 import runpod
 
 from chunking import normalize_chunking_settings, split_markdown_for_chunks, utf16_offsets
+from embedding_contract import (
+    MODEL_NATIVE_DIMENSIONS,
+    MODEL_OUTPUT_DIMENSIONS,
+    format_embedding_text,
+    normalize_output_dimensions,
+)
 
 
 PROTOCOL_VERSION = int(os.getenv("BUBBLE_RAG_PROTOCOL_VERSION", "1"))
@@ -25,11 +31,9 @@ MODEL_ALIASES = {
     "qwen3-embedding-0.6b": "Qwen/Qwen3-Embedding-0.6B",
     "qwen/qwen3-embedding-0.6b": "Qwen/Qwen3-Embedding-0.6B",
 }
-MODEL_DIMENSIONS = {
-    "Qwen/Qwen3-Embedding-4B": 2560,
-    "Qwen/Qwen3-Embedding-0.6B": 1024,
-}
 MAX_MARKDOWN_BYTES = int(os.getenv("BUBBLE_RAG_MAX_MARKDOWN_BYTES", str(50 * 1024 * 1024)))
+MAX_DIRECT_INPUTS = int(os.getenv("BUBBLE_RAG_MAX_DIRECT_INPUTS", "64"))
+MAX_DIRECT_INPUT_BYTES = int(os.getenv("BUBBLE_RAG_MAX_DIRECT_INPUT_BYTES", str(1024 * 1024)))
 DEFAULT_BATCH_SIZE = int(os.getenv("BUBBLE_RAG_EMBED_BATCH_SIZE", "8"))
 MANIFEST_PATH = Path(
     os.getenv(
@@ -55,6 +59,9 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         if operation == "preload_models":
             return preload_models(job_input)
 
+        if operation == "embed_texts":
+            return embed_texts(job_input)
+
         if operation == "chunk_and_embed":
             return chunk_and_embed(job, job_input)
 
@@ -70,7 +77,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "operation": "health",
         "protocolVersion": PROTOCOL_VERSION,
-        "workerVersion": "0.1.0",
+        "workerVersion": "0.2.0",
         "device": device_summary(),
         "allowedModels": allowed_models(),
         "defaultModel": default_model(),
@@ -93,6 +100,7 @@ def preload_models(job_input: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": model_id,
                 "dimensions": state["dimensions"],
+                "supportedDimensions": list(MODEL_OUTPUT_DIMENSIONS[model_id]),
                 "snapshotPath": state["snapshot_path"],
                 "snapshotRevision": state["snapshot_revision"],
                 "device": state["device"],
@@ -111,6 +119,45 @@ def preload_models(job_input: dict[str, Any]) -> dict[str, Any]:
     return manifest
 
 
+def embed_texts(job_input: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
+    model_id = normalize_model_id(job_input.get("model") or default_model())
+    require_allowed_model(model_id)
+    dimensions = normalize_output_dimensions(model_id, job_input.get("dimensions"))
+    purpose = str(job_input.get("purpose") or "query").strip().lower()
+    raw_input = job_input.get("input")
+
+    if raw_input is None:
+        raise ValueError("input is required.")
+
+    raw_texts = raw_input if isinstance(raw_input, list) else [raw_input]
+
+    if not raw_texts or len(raw_texts) > MAX_DIRECT_INPUTS:
+        raise ValueError(f"input must contain between 1 and {MAX_DIRECT_INPUTS} texts.")
+
+    texts = [format_embedding_text(value, purpose) for value in raw_texts]
+    input_bytes = sum(len(text.encode("utf-8")) for text in texts)
+    if input_bytes > MAX_DIRECT_INPUT_BYTES:
+        raise ValueError("Direct embedding input exceeds the worker size limit.")
+
+    state = get_model_state(model_id)
+    batch_size = min(positive_int(job_input.get("batchSize"), DEFAULT_BATCH_SIZE), 64)
+    vectors = encode_texts(state, texts, batch_size, dimensions)
+
+    return {
+        "ok": True,
+        "operation": "embed_texts",
+        "protocolVersion": PROTOCOL_VERSION,
+        "workerVersion": "0.2.0",
+        "model": model_id,
+        "modelRevision": state["snapshot_revision"],
+        "dimensions": dimensions,
+        "purpose": purpose,
+        "embeddings": vectors.tolist(),
+        "elapsedMs": elapsed_ms(started),
+    }
+
+
 def chunk_and_embed(job: dict[str, Any], job_input: dict[str, Any]) -> dict[str, Any]:
     started = time.perf_counter()
     job_id = required_string(job_input, "jobId")
@@ -123,7 +170,7 @@ def chunk_and_embed(job: dict[str, Any], job_input: dict[str, Any]) -> dict[str,
     embedding = as_record(job_input.get("embedding"))
     model_id = normalize_model_id(embedding.get("model") or default_model())
     require_allowed_model(model_id)
-    expected_dimensions = int(embedding.get("dimensions") or MODEL_DIMENSIONS.get(model_id, 0))
+    output_dimensions = normalize_output_dimensions(model_id, embedding.get("dimensions"))
 
     download_started = time.perf_counter()
     markdown = download_markdown(download_url, job_token, as_record(job_input.get("document")))
@@ -138,11 +185,6 @@ def chunk_and_embed(job: dict[str, Any], job_input: dict[str, Any]) -> dict[str,
     chunking_ms = elapsed_ms(chunk_started)
 
     model_state = get_model_state(model_id)
-    if expected_dimensions and model_state["dimensions"] != expected_dimensions:
-        raise ValueError(
-            f"Model returned {model_state['dimensions']} dimensions, expected {expected_dimensions}."
-        )
-
     batch_size = positive_int(embedding.get("batchSize"), DEFAULT_BATCH_SIZE)
     total_batches = max(1, math.ceil(len(chunks) / batch_size))
     batch_hashes: list[str] = []
@@ -152,7 +194,12 @@ def chunk_and_embed(job: dict[str, Any], job_input: dict[str, Any]) -> dict[str,
 
     for batch_index, first in enumerate(range(0, len(chunks), batch_size)):
         batch = chunks[first : first + batch_size]
-        vectors = encode_texts(model_state, [chunk.text for chunk in batch], batch_size)
+        vectors = encode_texts(
+            model_state,
+            [chunk.text for chunk in batch],
+            batch_size,
+            output_dimensions,
+        )
         payload_chunks = []
 
         for offset, chunk in enumerate(batch):
@@ -231,7 +278,7 @@ def chunk_and_embed(job: dict[str, Any], job_input: dict[str, Any]) -> dict[str,
         "jobId": job_id,
         "attemptId": attempt_id,
         "model": model_id,
-        "dimensions": model_state["dimensions"],
+        "dimensions": output_dimensions,
         "chunks": embedded_chunks,
         "totalBatches": total_batches,
         "elapsedMs": elapsed_ms(started),
@@ -266,7 +313,7 @@ def get_model_state(model_id: str) -> dict[str, Any]:
         show_progress_bar=False,
     )
     dimensions = int(probe.shape[-1])
-    expected = MODEL_DIMENSIONS.get(model_id)
+    expected = MODEL_NATIVE_DIMENSIONS.get(model_id)
 
     if expected is not None and dimensions != expected:
         raise ValueError(f"{model_id} returned {dimensions} dimensions, expected {expected}.")
@@ -284,18 +331,24 @@ def get_model_state(model_id: str) -> dict[str, Any]:
     return state
 
 
-def encode_texts(model_state: dict[str, Any], texts: list[str], batch_size: int) -> np.ndarray:
+def encode_texts(
+    model_state: dict[str, Any],
+    texts: list[str],
+    batch_size: int,
+    output_dimensions: int,
+) -> np.ndarray:
     model = model_state["model"]
     vectors = model.encode(
         [text.strip() or " " for text in texts],
         batch_size=batch_size,
         convert_to_numpy=True,
         show_progress_bar=False,
-        normalize_embeddings=False,
+        normalize_embeddings=True,
+        truncate_dim=output_dimensions,
     )
     vectors = np.asarray(vectors, dtype="<f4")
 
-    if vectors.ndim != 2 or vectors.shape[1] != model_state["dimensions"]:
+    if vectors.ndim != 2 or vectors.shape[1] != output_dimensions:
         raise ValueError("Embedding model returned an unexpected vector shape.")
 
     if not np.isfinite(vectors).all():
