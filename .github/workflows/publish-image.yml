@@ -34,10 +34,6 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/jeffvan302/rag-runpod:0.1.0
-
-      - name: Make GHCR package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api --method PATCH /user/packages/container/rag-runpod/visibility -f visibility=public \
-            || echo "Package visibility was not changed by this token."
+          labels: |
+            org.opencontainers.image.source=https://github.com/jeffvan302/rag-runpod
+            org.opencontainers.image.description=RunPod Serverless worker for BubbleAPI embedding acceleration
